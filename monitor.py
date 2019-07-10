@@ -29,7 +29,7 @@ class Monitor:
         start_x, start_y, end_x, end_y = monitor_info['Monitor']
 
         # Calculate boundary object.
-        self.__boundary = Boundary(start_x, start_y, end_x - start_x, end_y - start_y)
+        self.__boundary = Boundary(start_x, start_y, end_x, end_y)
 
         pass
 

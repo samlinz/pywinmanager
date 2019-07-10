@@ -104,10 +104,10 @@ class Window:
         # win32gui.RedrawWindow(self.hwnd, None, None, win32con.RDW_UPDATENOW)
 
     def set_window_position(self, boundary: Boundary, redraw: bool = True):
-        x = boundary.__left
-        y = boundary.__top
-        w = boundary.__right
-        h = boundary.__bottom
+        x = boundary.left
+        y = boundary.top
+        w = boundary.width
+        h = boundary.height
 
         # https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-movewindow
         win32gui.MoveWindow(self.__hwnd, x, y, w, h, redraw)
@@ -126,10 +126,14 @@ class Window:
         self.__set_style_long(self.__original_window_style)
 
     def __get_style_long(self):
+        """Get window style WinAPI flags."""
+
         # https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowlonga
         return win32gui.GetWindowLong(self.__hwnd, win32con.GWL_STYLE)
 
     def __set_style_long(self, style_long):
+        """Set window style using WinAPI flags."""
+
         # https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlonga
         win32gui.SetWindowLong(self.__hwnd, win32con.GWL_STYLE, style_long)
 
@@ -149,6 +153,11 @@ class Window:
     @property
     def boundary(self):
         return self.__update_boundary()
+
+    @boundary.setter
+    def boundary(self, boundary : Boundary):
+        self.__window_boundary = boundary
+        self.set_window_position(self.__window_boundary)
 
     @property
     def window_state(self):
@@ -208,7 +217,7 @@ class WindowHolder:
         if not isinstance(window, Window):
             raise ValueError('Invalid window')
 
-        if mode not in WindowHolder.MODES:
+        if mode not in WindowHolder.MODES.values():
             raise ValueError(f'Invalid mode {mode}')
 
         self.__mode = mode
@@ -222,6 +231,9 @@ class WindowHolder:
     def window(self):
         return self.__window
 
+    def set_boundary(self, boundary : Boundary):
+        self.__window.boundary = boundary
+
 class WindowContainerConfiguration:
     SPLIT_LAYOUT_MODES = {
         'HORIZONTAL': 1,
@@ -234,33 +246,22 @@ class WindowContainerConfiguration:
         'TABBED' : 3
     }
 
-    SPLIT_ORIENTATIONS = {
-        'HORIZONTAL' : 1,
-        'VERTICAL' : 2
-    }
-
     # Default configuration.
     DEFAULT_LAYOUT = LAYOUTS['SPLIT']
-    DEFAULT_ORIENTATION = SPLIT_ORIENTATIONS['HORIZONTAL']
     DEFAULT_SPLIT_MODE = SPLIT_LAYOUT_MODES['HORIZONTAL']
 
     def __init__(self
                  , layout : int
-                 , orientation : int
                  , split_layout_mode : int):
         super().__init__()
 
-        if layout not in WindowContainerConfiguration.LAYOUTS:
+        if layout not in WindowContainerConfiguration.LAYOUTS.values():
             raise ValueError('Invalid layout')
 
-        if orientation not in WindowContainerConfiguration.SPLIT_ORIENTATIONS:
-            raise ValueError('Invalid orientation')
-
-        if orientation not in WindowContainerConfiguration.SPLIT_LAYOUT_MODES:
+        if split_layout_mode not in WindowContainerConfiguration.SPLIT_LAYOUT_MODES.values():
             raise ValueError('Invalid orientation')
 
         self.__layout = layout
-        self.__orientation = orientation
         self.__split_layout_mode = split_layout_mode
 
     @property
@@ -268,25 +269,24 @@ class WindowContainerConfiguration:
         return self.__layout
 
     @property
-    def orientation(self):
-        return self.__orientation
-
-    @property
     def split_layout_mode(self):
         return self.__split_layout_mode
 
 class WindowContainer:
     def __init__(self
-                , configuration: WindowContainerConfiguration
-                , window : Window = None
-                , containers : [] = None):
+            , configuration : WindowContainerConfiguration
+            , boundary : Boundary
+            , windows : [WindowHolder] = None
+            , containers : [] = None):
         super().__init__()
 
-        self.__windows = None
-        self.__containers = None
+        self.__windows = []
+        self.__containers = []
 
-        if window is not None:
-            self.__windows = [window]
+        if windows is not None:
+            for window in windows:
+                if not isinstance(window, WindowHolder): raise ValueError('Provided window is not WindowHolder')
+            self.__windows = windows
 
         if containers is not None:
             for container in containers:
@@ -295,42 +295,92 @@ class WindowContainer:
 
             self.__containers = containers
 
-        if self.__windows is not None and self.__containers is not None:
-            raise ValueError(f'Container cannot have both window and containers')
+        if len(self.__windows) > 0 and len(self.__containers) > 0:
+            raise ValueError('Container cannot have both window and containers')
 
-        self.__configuration = configuration
+        self.__configuration = configuration # type: WindowContainerConfiguration
+        self.__boundary = boundary # type: Boundary
+
+        self.__convert_container_if_needed()
+        self.__enforce_layout()
 
     def is_container(self):
-        return self.__windows is None and self.__containers is not None
+        return len(self.__windows) == 0 and len(self.__containers) > 0
 
-    def add_window(self, window : Window):
+    def add_window(self, window : WindowHolder):
+        if not isinstance(window, WindowHolder): raise ValueError(
+            'Provided window is not WindowHolder')
+
         self.__windows.append(window)
         self.__convert_container_if_needed()
 
     def __enforce_layout(self):
-        pass
+        # Calculate children's positions inside this container.
+        layout = self.__configuration.layout
+        num_children = len(self.__containers) if len(self.__containers) > 0 else len(self.__windows)
+        x, y, _, _ = self.__boundary.tuple
+        width, height = self.__boundary.width, self.__boundary.height
+
+        if layout == WindowContainerConfiguration.LAYOUTS['SPLIT']:
+            orientation = self.__configuration.split_layout_mode
+
+            orientation_horizontal = orientation == WindowContainerConfiguration.SPLIT_LAYOUT_MODES['HORIZONTAL']
+            orientation_vertical = orientation == WindowContainerConfiguration.SPLIT_LAYOUT_MODES['VERTICAL']
+
+            single_width = width // num_children if orientation_horizontal else width
+            single_height = height // num_children if orientation_vertical else height
+
+            if sum([orientation_horizontal, orientation_vertical]) != 1:
+                raise ValueError(f'Invalid orientation {orientation}')
+
+            children = self.__containers if len(self.__containers) > 0 else self.__windows
+
+            # Set children's boundaries.
+            for child_index, child in enumerate(children):
+                child_x = child_index * single_width + x if orientation_horizontal else x
+                child_y = child_index * single_height + y if orientation_vertical else y
+                child_x2 = child_x + single_width
+                child_y2 = child_y + single_height
+                child_boundary = Boundary(child_x, child_y, child_x2, child_y2)
+                child.set_boundary(child_boundary)
+
+        else:
+            raise NotImplementedError() # TODO: OTHER MODES
+
+        # If this container contains multiple layouts, propagate call to them.
+        for child_container in self.__containers:
+            child_container.enforce_layout()
 
     def __convert_container_if_needed(self):
         window_count = len(self.__windows)
-        container_count = len(self.__containers) if self.__containers is not None else 0
+        container_count = len(self.__containers)
 
         if window_count == 0 and container_count == 1:
             # This container becomes a leaf node with only one window.
             self.__windows = [self.__containers[0].window]
             self.__containers = None
-            # container to window
         elif window_count > 1 and container_count == 0:
+            # Turn multiple windows into child containers.
             self.__containers = []
             for child_window in self.__windows:
-                self.__containers.append(WindowContainer(self.__configuration))
-            # windows to containers
+                child_window_container = WindowContainer(self.__configuration
+                                                         , child_window.window.boundary
+                                                         , windows=[child_window])
+                self.__containers.append(child_window_container)
+
+            self.__windows = []
         else:
-            raise ValueError(f'Invalid state for container, window count {window_count} container count {container_count}')
+            return
 
     @property
-    def window(self) -> Window:
+    def window(self) -> WindowHolder:
         if len(self.__windows) != 1:
             raise ValueError('Container does not have a single window')
 
         return self.__windows[0]
 
+    def set_boundary(self, boundary : Boundary):
+        self.__boundary = boundary
+
+    def enforce_layout(self):
+        self.__enforce_layout()

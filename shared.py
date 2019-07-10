@@ -11,6 +11,14 @@ class Boundary:
     def tuple(self): return (self.__left, self.__top, self.__right, self.__bottom)
 
     @property
+    def left(self):
+        return self.__left
+
+    @property
+    def top(self):
+        return self.__top
+
+    @property
     def width(self):
         return self.__right - self.__left
 
